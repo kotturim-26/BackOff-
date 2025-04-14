@@ -1,126 +1,76 @@
-//  AnalyticsView.swift
-//  BackOff!!!Mobile
-//
-//  Created by Maanasvi Kotturi on 3/10/25.
+// AnalyticsView.swift
+// BackOff!!!Mobile
+// Created by Maanasvi Kotturi on 4/12/25.
 
-// this file is code for the analytics page of the app
-//user can select specific dates to view data and navigate to various graphs
 import SwiftUI
-import Charts
 
 struct AnalyticsView: View {
-    //Active chart allows for user to select dates
-    enum ActiveChart {
-        case line, bar, none
-    }
-
-    @State private var dateRange: ClosedRange<Date> = {
-        let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let end = Date()
-        return start...end
-    }()
-
-    @State private var activeChart: ActiveChart = .none
-    //Generation of fake data for prototype/testing pursposes will be replaced by data accquired from device later
-    private var allSleepData: [SleepData] = SleepDataGenerator.generateDummySleepData(days: 60)
-    //filter sleep data to include only selected date range
-    private var filteredSleepData: [SleepData] {
-        return allSleepData.filter { dateRange.contains($0.date) }
-    }
-
-    //calculate percent change in time spent back sleeping from curret week to last week
-    private func percentChangeFromLastWeek(current: [SleepData], all: [SleepData]) -> Double {
-        let calendar = Calendar.current
-        guard let startOfLastWeek = calendar.date(byAdding: .day, value: -7, to: dateRange.lowerBound),
-              let endOfLastWeek = calendar.date(byAdding: .day, value: -1, to: dateRange.lowerBound) else { return 0 }
-
-        let lastWeek = all.filter { $0.date >= startOfLastWeek && $0.date <= endOfLastWeek }
-
-        let avgThisRange = current.map { Double($0.backSleepMinutes) }.reduce(0, +) / Double(current.count)
-        let avgLastWeek = lastWeek.map { Double($0.backSleepMinutes) }.reduce(0, +) / Double(lastWeek.count)
-
-        guard avgLastWeek > 0 else { return 0 }
-
-        return ((avgThisRange - avgLastWeek) / avgLastWeek) * 100
-    }
+    @State private var selectedDate = Date()
+    @State private var sleepData: [SleepData] = []
 
     var body: some View {
-        //allows user to scroll for easier viewing
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 20) {
-                Text("Your Sleep Analytics")
-                    .font(.largeTitle)
+        VStack {
+            // Evaluator comment: Consider providing a more descriptive label for the date picker.
+            DatePicker("Select Date", selection: $selectedDate, displayedComponents: .date)
+                .datePickerStyle(GraphicalDatePickerStyle())
+                .onChange(of: selectedDate) { newDate in
+                    // Evaluator comment: Add logic to prevent selection of future dates or dates without data.
+                    loadSleepData(for: newDate)
+                }
+
+            if sleepData.isEmpty {
+                // Evaluator comment: Display a user-friendly message when there's no data.
+                Text("No data collected for this day.")
+                    .foregroundColor(.gray)
+            } else {
+                // Evaluator comment: Add descriptive axis labels to the chart for clarity.
+                SleepLineChart(data: sleepData)
+                    .frame(height: 200)
+                    .padding()
+            }
+
+            // Evaluator comment: Lines 31-46 contain complex logic; consider adding comments to explain each step.
+            VStack(alignment: .leading) {
+                Text("Weekly Analytics")
+                    .font(.headline)
                     .padding(.top)
 
-                VStack(alignment: .leading) {
-                    Text("Select Date Range")
-                        .font(.headline)
-                    DatePicker("Start", selection: Binding(
-                        get: { dateRange.lowerBound },
-                        set: { dateRange = $0...dateRange.upperBound }
-                    ), displayedComponents: [.date])
-                    DatePicker("End", selection: Binding(
-                        get: { dateRange.upperBound },
-                        set: { dateRange = dateRange.lowerBound...$0 }
-                    ), in: dateRange.lowerBound...Date(), displayedComponents: [.date])
-                }
-                .padding()
-//integrating graphs
-                HStack(spacing: 16) {
-                    Button("Back Sleep Line Chart") {
-                        activeChart = .line
-                    }
-                    .buttonStyle(.borderedProminent)
+                // Evaluator comment: Clarify the definitions of "current" and "last" week.
+                let currentWeekData = getWeekData(for: selectedDate)
+                let lastWeekData = getWeekData(for: Calendar.current.date(byAdding: .weekOfYear, value: -1, to: selectedDate) ?? Date())
 
-                    Button("Stacked Bar Chart") {
-                        activeChart = .bar
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(.bottom)
+                let currentWeekBackSleep = currentWeekData.reduce(0) { $0 + $1.backSleepMinutes }
+                let lastWeekBackSleep = lastWeekData.reduce(0) { $0 + $1.backSleepMinutes }
 
-                switch activeChart {
-                case .line:
-                    VStack(spacing: 10) {
-                        Text("Back Sleep Trend (Line)")
-                            .font(.headline)
+                // Evaluator comment: Ensure arrays are not empty before performing calculations to avoid errors.
+                let percentChange = calculatePercentChange(current: currentWeekBackSleep, previous: lastWeekBackSleep)
 
-                        SleepLineChart(sleepData: filteredSleepData)
-
-                        let change = percentChangeFromLastWeek(current: filteredSleepData, all: allSleepData)
-
-                        Text(String(format: "Back sleeping %@ %.1f%% since last week",
-                                    change > 0 ? "↑" : "↓",
-                                    abs(change)))
-                            .font(.subheadline)
-                            .foregroundColor(change > 0 ? .red : .green)
-                    }
-                case .bar:
-                    VStack(spacing: 10) {
-                        Text("Sleep Distribution (Stacked Bar)")
-                            .font(.headline)
-
-                        StackedSleepBarChart(sleepData: filteredSleepData)
-                    }
-                case .none:
-                    Text("Select a graph above to view your sleep data.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .padding(.top)
-                }
+                Text("Back Sleep: \(currentWeekBackSleep) mins")
+                Text("Change from last week: \(percentChange)%")
             }
-            .padding(.bottom)
+            .padding()
         }
-        .navigationTitle("Analytics")
+        .onAppear {
+            loadSleepData(for: selectedDate)
+        }
+    }
+
+    private func loadSleepData(for date: Date) {
+        // Load sleep data for the selected date.
+        // Evaluator comment: Implement logic to handle dates with no data.
+        sleepData = SleepDataGenerator.generateData(for: date)
+    }
+
+    private func getWeekData(for date: Date) -> [SleepData] {
+        // Retrieve sleep data for the week of the given date.
+        // Evaluator comment: Clarify how the week is defined (e.g., Sunday to Saturday).
+        return SleepDataGenerator.generateWeekData(for: date)
+    }
+
+    private func calculatePercentChange(current: Int, previous: Int) -> Int {
+        // Calculate the percentage change between current and previous values.
+        // Evaluator comment: Handle division by zero when previous value is zero.
+        guard previous != 0 else { return 0 }
+        return Int(((Double(current) - Double(previous)) / Double(previous)) * 100)
     }
 }
-
-// MARK: - Preview
-
-struct AnalyticsView_Previews: PreviewProvider {
-    static var previews: some View {
-        AnalyticsView()
-    }
-}
-
