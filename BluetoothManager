@@ -1,0 +1,107 @@
+//
+//  BluetoothManager.swift
+//  BackOff!!!WatchApp
+//
+//  Created by Maanasvi Kotturi on 4/14/25.
+//
+import SwiftUI
+import Foundation
+import CoreBluetooth
+
+enum BluetoothCommand {
+    case start
+    case stop
+}
+
+class BluetoothManager: NSObject, ObservableObject {
+    @Published var receivedSleepPosition: String? = nil
+    
+    private var centralManager: CBCentralManager!
+    private var connectedPeripheral: CBPeripheral?
+    
+    // Replace with your actual service/characteristic UUIDs
+    private let sleepServiceUUID = CBUUID(string: "YOUR_SERVICE_UUID")
+    private let sleepCommandCharacteristicUUID = CBUUID(string: "YOUR_CHARACTERISTIC_UUID")
+
+    private var sleepCommandCharacteristic: CBCharacteristic?
+
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    func sendCommand(_ command: BluetoothCommand) {
+        guard let peripheral = connectedPeripheral,
+              let characteristic = sleepCommandCharacteristic else {
+            print("Peripheral or characteristic not ready")
+            return
+        }
+
+        let commandString: String
+        switch command {
+        case .start:
+            commandString = "START"
+        case .stop:
+            commandString = "STOP"
+        }
+
+        if let data = commandString.data(using: .utf8) {
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+            print("Sent command: \(commandString)")
+        }
+    }
+}
+
+// MARK: - CBCentralManagerDelegate
+
+extension BluetoothManager: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn {
+            centralManager.scanForPeripherals(withServices: [sleepServiceUUID], options: nil)
+        } else {
+            print("Bluetooth is not available")
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        centralManager.stopScan()
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        centralManager.connect(peripheral, options: nil)
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        peripheral.discoverServices([sleepServiceUUID])
+    }
+}
+
+// MARK: - CBPeripheralDelegate
+
+extension BluetoothManager: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+        for service in services {
+            peripheral.discoverCharacteristics([sleepCommandCharacteristicUUID], for: service)
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let characteristics = service.characteristics else { return }
+        for characteristic in characteristics {
+            if characteristic.uuid == sleepCommandCharacteristicUUID {
+                sleepCommandCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let data = characteristic.value,
+           let stringValue = String(data: data, encoding: .utf8) {
+            DispatchQueue.main.async {
+                self.receivedSleepPosition = stringValue
+            }
+        }
+    }
+}
+
