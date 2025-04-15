@@ -1,0 +1,96 @@
+//
+//  ContentView.swift
+//  BackOff!!!WatchApp Watch App
+//
+//  Created by Maanasvi Kotturi on 4/14/25.
+//
+
+import SwiftUI
+import Foundation
+import CoreBluetooth
+
+struct ContentView: View {
+    @StateObject private var bluetoothManager = BluetoothManager()
+    @State private var isTracking = false
+    @State private var showCalibration = false
+    @State private var lastSleepPosition: String = "Unknown"
+    @State private var startTime: Date? = nil
+    @State private var endTime: Date? = nil
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Sleep Tracker")
+                .font(.headline)
+
+            if let start = startTime {
+                Text("Started: \(start, formatter: dateFormatter)")
+            }
+
+            if let end = endTime {
+                Text("Ended: \(end, formatter: dateFormatter)")
+            }
+
+            if let start = startTime, let end = endTime {
+                let duration = Int(end.timeIntervalSince(start) / 60)
+                Text("Duration: \(duration) min")
+                    .font(.footnote)
+                    .foregroundColor(.blue)
+            }
+
+            Text("Last Position: \(lastSleepPosition)")
+                .font(.subheadline)
+                .foregroundColor(.gray)
+
+            Button(action: {
+                isTracking ? stopSleepTracking() : startSleepTracking()
+            }) {
+                Text(isTracking ? "Stop" : "Start")
+                    .font(.title3)
+                    .padding(8)
+                    .frame(maxWidth: .infinity)
+                    .background(isTracking ? Color.red : Color.green)
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+            }
+            .accessibilityLabel(isTracking ? "Stop Sleep Tracking" : "Start Sleep Tracking")
+
+            Button("Calibration Mode") {
+                showCalibration = true
+            }
+            .font(.footnote)
+            .padding(.top, 8)
+        }
+        .padding()
+        .sheet(isPresented: $showCalibration) {
+            CalibrationView(btManager: bluetoothManager)
+        }
+        .onReceive(bluetoothManager.$receivedSleepPosition) { newVal in
+            if let val = newVal {
+                lastSleepPosition = val
+            }
+        }
+    }
+
+    private func startSleepTracking() {
+        isTracking = true
+        startTime = Date()
+        bluetoothManager.sendCommand(.start) // use enum version
+    }
+
+    private func stopSleepTracking() {
+        isTracking = false
+        endTime = Date()
+        bluetoothManager.sendCommand(.stop) // use enum version
+        // TODO: Save `dailyData` locally or send to iPhone
+    }
+}
+
+// Updated date formatter using local timezone
+private let dateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.timeStyle = .short
+    formatter.dateStyle = .short
+    formatter.timeZone = TimeZone.current
+    return formatter
+}()
+
