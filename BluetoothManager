@@ -4,24 +4,31 @@
 //
 //  Created by Maanasvi Kotturi on 4/14/25.
 //
-import SwiftUI
+
 import Foundation
 import CoreBluetooth
 
-enum BluetoothCommand {
-    case start
-    case stop
+
+// Enum representing all supported Bluetooth commands
+enum BluetoothCommand: String {
+    case start = "START"
+    case stop = "STOP"
+    case startRight = "START_RIGHT"
+    case startLeft = "START_LEFT"
+    case startStomach = "START_STOMACH"
+    case startBack = "START_BACK"
 }
 
-class BluetoothManager: NSObject, ObservableObject {
+final class BluetoothManager: NSObject, ObservableObject {
     @Published var receivedSleepPosition: String? = nil
-    
+
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
-    
-    // Replace with your actual service/characteristic UUIDs
-    private let sleepServiceUUID = CBUUID(string: "YOUR_SERVICE_UUID")
-    private let sleepCommandCharacteristicUUID = CBUUID(string: "YOUR_CHARACTERISTIC_UUID")
+
+    // Replace with your actual UUIDs
+    private let sleepServiceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
+    private let sleepCommandCharacteristicUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
+
 
     private var sleepCommandCharacteristic: CBCharacteristic?
 
@@ -30,30 +37,22 @@ class BluetoothManager: NSObject, ObservableObject {
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
+    // Send command to BLE device
     func sendCommand(_ command: BluetoothCommand) {
         guard let peripheral = connectedPeripheral,
               let characteristic = sleepCommandCharacteristic else {
-            print("Peripheral or characteristic not ready")
+            print("Peripheral or characteristic not available")
             return
         }
 
-        let commandString: String
-        switch command {
-        case .start:
-            commandString = "START"
-        case .stop:
-            commandString = "STOP"
-        }
-
-        if let data = commandString.data(using: .utf8) {
+        if let data = command.rawValue.data(using: .utf8) {
             peripheral.writeValue(data, for: characteristic, type: .withResponse)
-            print("Sent command: \(commandString)")
+            print("Sent command: \(command.rawValue)")
         }
     }
 }
 
 // MARK: - CBCentralManagerDelegate
-
 extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
@@ -63,7 +62,8 @@ extension BluetoothManager: CBCentralManagerDelegate {
         }
     }
 
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any], rssi RSSI: NSNumber) {
         centralManager.stopScan()
         connectedPeripheral = peripheral
         peripheral.delegate = self
@@ -76,7 +76,6 @@ extension BluetoothManager: CBCentralManagerDelegate {
 }
 
 // MARK: - CBPeripheralDelegate
-
 extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
