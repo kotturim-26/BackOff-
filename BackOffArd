@@ -1,0 +1,107 @@
+#include <ArduinoBLE.h>
+
+// UUIDs for BLE service and characteristic
+BLEService sleepService("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+BLECharacteristic sleepCommandCharacteristic("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", BLEWrite, 50);  // Set size to 50 bytes
+
+// Pressure sensor pins
+const int pressurePins[4] = {A0, A1, A2, A3};
+
+// Buffers for calibration data
+int right_sleepingvals[300];
+int left_sleepingvals[300];
+int stomach_sleepingvals[300];
+int back_sleepingvals[300];
+
+// State variables
+bool isConnected = false;
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  for (int i = 0; i < 4; i++) {
+    pinMode(pressurePins[i], INPUT);
+  }
+
+  if (!BLE.begin()) {
+    Serial.println("❌ Failed to initialize BLE!");
+    while (1);
+  }
+
+  BLE.setLocalName("BackOffDevice");
+  BLE.setAdvertisedService(sleepService);
+  sleepService.addCharacteristic(sleepCommandCharacteristic);
+  BLE.addService(sleepService);
+  BLE.advertise();
+
+  Serial.println("✅ BLE advertising started");
+}
+
+void loop() {
+  BLEDevice central = BLE.central();
+
+  if (central) {
+    Serial.print("🔗 Connected to: ");
+    Serial.println(central.address());
+    isConnected = true;
+
+    while (central.connected()) {
+      if (sleepCommandCharacteristic.written()) {
+        int len = sleepCommandCharacteristic.valueLength();
+        String command = String((const char*)sleepCommandCharacteristic.value()).substring(0, len);
+
+        command.trim();
+        Serial.print("📩 Received command: ");
+        Serial.println(command);
+
+        if (command == "START_RIGHT") {
+          calibratePosition("RIGHT", right_sleepingvals);
+        } else if (command == "START_LEFT") {
+          calibratePosition("LEFT", left_sleepingvals);
+        } else if (command == "START_STOMACH") {
+          calibratePosition("STOMACH", stomach_sleepingvals);
+        } else if (command == "START_BACK") {
+          calibratePosition("BACK", back_sleepingvals);
+        } else {
+          Serial.println("⚠️ Unknown command.");
+        }
+      }
+    }
+
+    Serial.println("❌ Disconnected from central");
+    isConnected = false;
+  } else if (!isConnected) {
+    Serial.println("⚠️ Waiting for BLE central connection...");
+    delay(2000);
+  }
+}
+
+void calibratePosition(const char* label, int* buffer) {
+  Serial.print("🔧 Calibrating: ");
+  Serial.println(label);
+
+  collectPressure(buffer);
+  logArray(label, buffer);
+}
+
+void collectPressure(int* buffer) {
+  for (int i = 0; i < 300; i++) {
+    int sum = 0;
+    for (int j = 0; j < 4; j++) {
+      sum += analogRead(pressurePins[j]);
+    }
+    buffer[i] = sum / 4;
+    delay(100); // 100 ms per sample => ~30s for 300 samples
+  }
+}
+
+void logArray(const char* label, int* buffer) {
+  Serial.print(label);
+  Serial.print(" values: ");
+  for (int i = 0; i < 300; i++) {
+    Serial.print(buffer[i]);
+    if (i < 299) Serial.print(",");
+  }
+  Serial.println();
+}
