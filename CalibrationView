@@ -1,0 +1,210 @@
+import SwiftUI
+import AVFoundation
+
+struct CalibrationView: View {
+    @ObservedObject var btManager: BluetoothManager
+
+    @State private var calibrationStep = 0
+    @State private var isCalibrating = false
+    @State private var instructionText = ""
+    @State private var audioPlayer: AVAudioPlayer?
+    @Binding var calibrationFailed: Bool
+
+    @State private var storedThreshold: Int? = UserDefaults.standard.integer(forKey: "SleepThreshold")
+    @State private var thresholdValidated: Bool = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Calibration Mode")
+                .font(.headline)
+
+            if btManager.calibrationFailed {
+                Text("Calibration failed. Please try again.")
+                    .foregroundColor(.red)
+            }
+
+            if btManager.calibrationCancelled {
+                Text("Calibration was cancelled.")
+                    .foregroundColor(.orange)
+            }
+
+            if thresholdValidated, let threshold = storedThreshold {
+                Text("✅ Saved Threshold: \(threshold)")
+                    .foregroundColor(.green)
+                    .font(.subheadline)
+            }
+
+            Text(instructionText)
+                .multilineTextAlignment(.center)
+                .padding()
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !isCalibrating {
+                Button("Start Calibration") {
+                    startCalibration()
+                }
+                .buttonStyle(CalibrationButtonStyle())
+            } else {
+                Button("Cancel") {
+                    cancelCalibration()
+                }
+                .buttonStyle(CalibrationButtonStyle())
+                ProgressView("Calibrating...")
+            }
+        }
+        .padding()
+        .onAppear {
+            instructionText = "Press 'Start Calibration' to begin."
+            if storedThreshold != 0 {
+                thresholdValidated = true
+            }
+
+            NotificationCenter.default.addObserver(forName: .calibrationFailed, object: nil, queue: .main) { _ in
+                handleCalibrationFailure()
+            }
+        }
+        .onDisappear {
+            NotificationCenter.default.removeObserver(self, name: .calibrationFailed, object: nil)
+        }
+        .onReceive(btManager.$thresholdValue) { newThreshold in
+            if let threshold = newThreshold {
+                print("📏 CalibrationView received threshold: \(threshold)")
+                if validateThreshold(threshold) {
+                    storedThreshold = threshold
+                    thresholdValidated = true
+                    UserDefaults.standard.set(threshold, forKey: "SleepThreshold")
+                    instructionText = "✅ Threshold set and saved: \(threshold)"
+                    isCalibrating = false
+                } else {
+                    print("⚠️ Invalid threshold value received: \(threshold)")
+                    instructionText = "⚠️ Invalid threshold. Please recalibrate."
+                    calibrationFailed = true
+                    isCalibrating = false
+                }
+            }
+        }
+    }
+
+    // MARK: - Calibration Logic
+
+    let calibrationSequence: [(text: String, command: BluetoothCommand, label: String)] = [
+        ("Lie on your back for 30 seconds", .startBack, "Back"),
+        ("Lie on your left side for 30 seconds", .startLeft, "Left"),
+        ("Lie on your right side for 30 seconds", .startRight, "Right"),
+        ("Lie on your stomach for 30 seconds", .startStomach, "Stomach")
+    ]
+
+    func startCalibration() {
+        isCalibrating = true
+        calibrationStep = 0
+        btManager.calibrationFailed = false
+        btManager.calibrationCancelled = false
+        storedThreshold = nil
+        thresholdValidated = false
+        UserDefaults.standard.removeObject(forKey: "SleepThreshold")
+        runNextStep()
+    }
+
+    func cancelCalibration() {
+        isCalibrating = false
+        instructionText = "Calibration canceled."
+        btManager.calibrationCancelled = true
+    }
+
+    func runNextStep() {
+        guard isCalibrating, calibrationStep < calibrationSequence.count else {
+            instructionText = "✅ Calibration Complete!"
+            isCalibrating = false
+            return
+        }
+
+        let step = calibrationSequence[calibrationStep]
+        let position = step.label
+
+        countdown(seconds: 10, messagePrefix: "Next position is: \(position). Get ready in") {
+            instructionText = step.text
+            playBeep()
+            btManager.sendCommand(step.command)
+
+            wait(seconds: 30) {
+                guard isCalibrating else { return }
+                calibrationStep += 1
+                runNextStep()
+            }
+        }
+    }
+
+    func countdown(seconds: Int, messagePrefix: String, completion: @escaping () -> Void) {
+        var remaining = seconds
+
+        func tick() {
+            guard isCalibrating else { return }
+            instructionText = "\(messagePrefix) \(remaining)s..."
+            playBeep()
+
+            if remaining > 1 {
+                remaining -= 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    tick()
+                }
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    completion()
+                }
+            }
+        }
+
+        tick()
+    }
+
+    func wait(seconds: Int, completion: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds)) {
+            completion()
+        }
+    }
+
+    func playBeep() {
+        guard let url = Bundle.main.url(forResource: "beep", withExtension: "wav") else {
+            return
+        }
+
+        do {
+            audioPlayer = try AVAudioPlayer(contentsOf: url)
+            audioPlayer?.prepareToPlay()
+            audioPlayer?.play()
+        } catch {
+            print("❌ Failed to play sound: \(error.localizedDescription)")
+        }
+    }
+
+    func validateThreshold(_ value: Int) -> Bool {
+        return value > 100 && value < 2000
+    }
+
+    func handleCalibrationFailure() {
+        isCalibrating = false
+        instructionText = "❌ Back calibration failed. Please try again in a different position."
+    }
+}
+
+// MARK: - Notification Extension
+
+extension Notification.Name {
+    static let calibrationFailed = Notification.Name("calibrationFailed")
+}
+
+// MARK: - Button Style
+
+struct CalibrationButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color.blue.opacity(configuration.isPressed ? 0.6 : 1.0))
+            .foregroundColor(.white)
+            .clipShape(Capsule())
+            .font(.body)
+    }
+}
+
