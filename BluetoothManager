@@ -1,69 +1,72 @@
-//
-//  BluetoothManager.swift
-//  BackOff!!!WatchApp
-//
-//  Created by Maanasvi Kotturi on 4/14/25.
-//
-
 import Foundation
 import CoreBluetooth
+import WatchConnectivity
 
-
-// Enum representing all supported Bluetooth commands
+// Enum representing supported Bluetooth commands
 enum BluetoothCommand: String {
-    case start = "START"
-    case stop = "STOP"
     case startRight = "START_RIGHT"
     case startLeft = "START_LEFT"
     case startStomach = "START_STOMACH"
     case startBack = "START_BACK"
+    case start = "START"
+    case stop = "STOP"
+    case pause = "PAUSE"
 }
 
-final class BluetoothManager: NSObject, ObservableObject {
+final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     @Published var receivedSleepPosition: String? = nil
+    @Published var isConnected: Bool = false
+    @Published var calibrationFailed: Bool = false
+    @Published var calibrationCancelled: Bool = false
+    @Published var thresholdValue: Int? = nil
 
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
+    private var sleepCommandCharacteristic: CBCharacteristic?
 
-    // Replace with your actual UUIDs
     private let sleepServiceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
     private let sleepCommandCharacteristicUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
-
-
-    private var sleepCommandCharacteristic: CBCharacteristic?
 
     override init() {
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
-    // Send command to BLE device
+    // Send command to the Arduino
     func sendCommand(_ command: BluetoothCommand) {
         guard let peripheral = connectedPeripheral,
-              let characteristic = sleepCommandCharacteristic else {
-            print("Peripheral or characteristic not available")
+              let characteristic = sleepCommandCharacteristic,
+              peripheral.state == .connected else {
+            print("❌ Cannot send: peripheral not connected or characteristic not found")
             return
         }
 
         if let data = command.rawValue.data(using: .utf8) {
             peripheral.writeValue(data, for: characteristic, type: .withResponse)
-            print("Sent command: \(command.rawValue)")
+            print("📤 Sent command: \(command.rawValue)")
         }
     }
-}
 
-// MARK: - CBCentralManagerDelegate
-extension BluetoothManager: CBCentralManagerDelegate {
+    func reconnect() {
+        if centralManager.state == .poweredOn {
+            print("🔁 Reconnecting...")
+            centralManager.scanForPeripherals(withServices: [sleepServiceUUID], options: nil)
+        }
+    }
+
+    // MARK: - CBCentralManagerDelegate
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
+            print("✅ Bluetooth is powered on. Scanning for peripherals...")
             centralManager.scanForPeripherals(withServices: [sleepServiceUUID], options: nil)
         } else {
-            print("Bluetooth is not available")
+            print("❌ Bluetooth is not available: \(central.state.rawValue)")
         }
     }
 
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
-                        advertisementData: [String : Any], rssi RSSI: NSNumber) {
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        print("🔍 Discovered peripheral: \(peripheral.name ?? "Unknown")")
         centralManager.stopScan()
         connectedPeripheral = peripheral
         peripheral.delegate = self
@@ -71,35 +74,113 @@ extension BluetoothManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        print("✅ Connected to peripheral: \(peripheral.name ?? "Unknown")")
+        isConnected = true
         peripheral.discoverServices([sleepServiceUUID])
     }
-}
 
-// MARK: - CBPeripheralDelegate
-extension BluetoothManager: CBPeripheralDelegate {
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        print("🔌 Disconnected from peripheral: \(peripheral.name ?? "Unknown")")
+        isConnected = false
+        reconnect()
+    }
+
+    // MARK: - CBPeripheralDelegate
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            print("❌ Error reading characteristic: \(error.localizedDescription)")
+            return
+        }
+
+        if characteristic.uuid == CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E") {
+            guard let data = characteristic.value else {
+                print("⚠️ No data in characteristic update.")
+                return
+            }
+
+            if let value = String(data: data, encoding: .utf8) {
+                let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                print("📩 Received data: \(trimmedValue)")
+
+                DispatchQueue.main.async {
+                    if trimmedValue.contains("CALIBRATION_FAILED") {
+                        self.calibrationFailed = true
+                        print("⚠️ Calibration failed.")
+                    } else if trimmedValue.starts(with: "THRESHOLD:") {
+                        let parts = trimmedValue.split(separator: ":")
+                        if parts.count == 2, let threshold = Int(parts[1]) {
+                            self.thresholdValue = threshold
+                            print("📥 Threshold stored: \(threshold)")
+                        } else {
+                            print("⚠️ Malformed threshold string: \(trimmedValue)")
+                        }
+                    } else {
+                        self.receivedSleepPosition = trimmedValue
+                        print("🛏️ Sleep position data received: \(trimmedValue)")
+                    }
+                }
+            } else {
+                print("❌ Failed to decode data as UTF-8 string")
+            }
+        } else {
+            print("⚠️ Received update from unexpected characteristic: \(characteristic.uuid)")
+        }
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let services = peripheral.services else { return }
+        if let error = error {
+            print("❌ Error discovering services: \(error.localizedDescription)")
+            return
+        }
+
+        guard let services = peripheral.services else {
+            print("⚠️ No services found.")
+            return
+        }
+
         for service in services {
-            peripheral.discoverCharacteristics([sleepCommandCharacteristicUUID], for: service)
+            print("✅ Discovered service: \(service.uuid)")
+            peripheral.discoverCharacteristics(nil, for: service)
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else { return }
+        if let error = error {
+            print("❌ Error discovering characteristics: \(error.localizedDescription)")
+            return
+        }
+
+        guard let characteristics = service.characteristics else {
+            print("⚠️ No characteristics found for service: \(service.uuid)")
+            return
+        }
+
         for characteristic in characteristics {
-            if characteristic.uuid == sleepCommandCharacteristicUUID {
-                sleepCommandCharacteristic = characteristic
+            print("✅ Discovered characteristic: \(characteristic.uuid)")
+
+            if characteristic.uuid == CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E") {
                 peripheral.setNotifyValue(true, for: characteristic)
+                print("📡 Subscribed to notifications for pressure data")
+            }
+
+            if characteristic.uuid == CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E") {
+                self.sleepCommandCharacteristic = characteristic
+                print("✍️ Ready to send commands")
             }
         }
     }
+}
 
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        if let data = characteristic.value,
-           let stringValue = String(data: data, encoding: .utf8) {
-            DispatchQueue.main.async {
-                self.receivedSleepPosition = stringValue
+extension BluetoothManager {
+    func sendSessionData(_ data: [String: Any]) {
+        if WCSession.default.isReachable {
+            WCSession.default.sendMessage(data, replyHandler: nil) { error in
+                print("❌ Failed to send session data: \(error.localizedDescription)")
             }
+            print("📤 Sent session data to phone")
+        } else {
+            print("⚠️ iPhone is not reachable")
         }
     }
 }
