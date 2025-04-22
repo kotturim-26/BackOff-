@@ -1,0 +1,57 @@
+//
+//  Connectivity.swift
+//  BackOff!!!Mobile
+//
+//  Created by Maanasvi Kotturi on 4/14/25.
+//
+
+import Foundation
+import WatchConnectivity
+
+final class Connectivity: NSObject, WCSessionDelegate {
+    static let shared = Connectivity()
+
+    private override init() {
+        super.init()
+
+        guard WCSession.isSupported() else {
+            return
+        }
+
+        WCSession.default.delegate = self
+        WCSession.default.activate()
+    }
+
+    // MARK: - WCSessionDelegate
+
+    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+        print("📡 WCSession activation complete: \(activationState.rawValue)")
+    }
+
+    func sessionDidBecomeInactive(_ session: WCSession) {
+        print("ℹ️ Session inactive")
+    }
+
+    func sessionDidDeactivate(_ session: WCSession) {
+        print("ℹ️ Session deactivated")
+        WCSession.default.activate() // re-activate
+    }
+
+    func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
+        // 🔄 Handle received session data here
+        if let startTime = message["startTime"] as? Date,
+           let endTime = message["endTime"] as? Date,
+           let sleepData = message["sleepData"] as? [String] {
+
+            print("🛌 Sleep Session Received")
+            print("Start: \(startTime)")
+            print("End: \(endTime)")
+            print("Positions: \(sleepData)")
+
+         
+        } else {
+            print("⚠️ Received unrecognized message format: \(message)")
+        }
+    }
+}
+
