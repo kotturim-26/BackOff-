@@ -1,0 +1,42 @@
+import HealthKit
+//enables watch to keep running even when watch face goes to sleep during sleep mode
+
+class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
+    private var healthStore = HKHealthStore()
+    private var session: HKWorkoutSession?
+    private var builder: HKLiveWorkoutBuilder?
+
+    func startWorkout() {
+        let config = HKWorkoutConfiguration()
+        config.activityType = .mindAndBody
+        config.locationType = .unknown
+
+        do {
+            session = try HKWorkoutSession(healthStore: healthStore, configuration: config)
+            builder = session?.associatedWorkoutBuilder()
+            session?.delegate = self
+            builder?.delegate = self
+
+            builder?.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: config)
+            session?.startActivity(with: Date())
+            builder?.beginCollection(withStart: Date()) { _, _ in }
+            print("🏃‍♀️ Workout session started")
+        } catch {
+            print("❌ Workout session failed: \(error.localizedDescription)")
+        }
+    }
+
+    func endWorkout() {
+        session?.end()
+        print("🛑 Workout session ended")
+    }
+
+    // Required delegate methods
+    func workoutSession(_ session: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState, from fromState: HKWorkoutSessionState, date: Date) {}
+    func workoutSession(_ session: HKWorkoutSession, didFailWithError error: Error) {
+        print("❌ Workout session error: \(error.localizedDescription)")
+    }
+    func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
+    func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {}
+}
+
