@@ -1,26 +1,42 @@
-//
-//  ContentView.swift
-//  BackOff!!!WatchApp Watch App
-//
-//  Created by Maanasvi Kotturi on 4/14/25.
-//
-
 import SwiftUI
-import Foundation
-import CoreBluetooth
+import WatchKit
+import Combine
 
 struct ContentView: View {
     @StateObject private var bluetoothManager = BluetoothManager()
+    @StateObject private var workoutManager = WorkoutManager()
+
     @State private var isTracking = false
+    @State private var isPaused = false
     @State private var showCalibration = false
+
     @State private var lastSleepPosition: String = "Unknown"
     @State private var startTime: Date? = nil
     @State private var endTime: Date? = nil
+    @State private var dailyData: [String] = []
+
+    @State private var isBluetoothConnected: Bool = true
+    @State private var calibrationFailed: Bool = false
+
+    @State private var inAppAlert: String? = nil
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         VStack(spacing: 12) {
             Text("Sleep Tracker")
                 .font(.headline)
+
+            if !isBluetoothConnected {
+                Text("Bluetooth Disconnected")
+                    .foregroundColor(.red)
+                    .font(.subheadline)
+            }
+
+            if calibrationFailed {
+                Text("Calibration Failed")
+                    .foregroundColor(.orange)
+                    .font(.subheadline)
+            }
 
             if let start = startTime {
                 Text("Started: \(start, formatter: dateFormatter)")
@@ -41,20 +57,47 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundColor(.gray)
 
-            Button(action: {
-                isTracking ? stopSleepTracking() : startSleepTracking()
-            }) {
-                Text(isTracking ? "Stop" : "Start")
-                    .font(.title3)
+            if let alert = inAppAlert {
+                Text(alert)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.top, 4)
+            }
+
+            if !isTracking {
+                Button("Start") {
+                    startSleepTracking()
+                }
+                .font(.title3)
+                .padding(8)
+                .frame(maxWidth: .infinity)
+                .background(Color.green)
+                .foregroundColor(.white)
+                .clipShape(Capsule())
+            } else {
+                HStack(spacing: 8) {
+                    Button(isPaused ? "Resume" : "Pause") {
+                        togglePause()
+                    }
                     .padding(8)
                     .frame(maxWidth: .infinity)
-                    .background(isTracking ? Color.red : Color.green)
+                    .background(isPaused ? Color.green : Color.orange)
                     .foregroundColor(.white)
                     .clipShape(Capsule())
+
+                    Button("Stop") {
+                        stopSleepTracking()
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.red)
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+                }
             }
-            .accessibilityLabel(isTracking ? "Stop Sleep Tracking" : "Start Sleep Tracking")
 
             Button("Calibration Mode") {
+                workoutManager.startWorkout()
                 showCalibration = true
             }
             .font(.footnote)
@@ -62,30 +105,119 @@ struct ContentView: View {
         }
         .padding()
         .sheet(isPresented: $showCalibration) {
-            CalibrationView(btManager: bluetoothManager)
+            CalibrationView(btManager: bluetoothManager, calibrationFailed: $calibrationFailed)
         }
         .onReceive(bluetoothManager.$receivedSleepPosition) { newVal in
-            if let val = newVal {
-                lastSleepPosition = val
+            if let val = newVal, isTracking, !isPaused {
+                print("Received sleep position: \(val)")
+                if let pressure = Int(val) {
+                    let threshold = UserDefaults.standard.integer(forKey: "SleepThreshold")
+
+                    if pressure >= threshold {
+                        lastSleepPosition = "On Back"
+                        dailyData.append("1")
+
+                        playStrongHaptic()
+                        inAppAlert = "⚠️ You're on your back. Please roll to your side."
+
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                            inAppAlert = nil
+                        }
+
+                    } else {
+                        lastSleepPosition = "Off Back"
+                        dailyData.append("0")
+                    }
+                } else {
+                    lastSleepPosition = val
+                }
             }
+        }
+        .onReceive(bluetoothManager.$isConnected) { connected in
+            isBluetoothConnected = connected
         }
     }
 
+    // MARK: - Tracking Logic
+
     private func startSleepTracking() {
         isTracking = true
+        isPaused = false
         startTime = Date()
-        bluetoothManager.sendCommand(.start) // use enum version
+        dailyData.removeAll()
+        bluetoothManager.sendCommand(.start)
+        workoutManager.startWorkout()
+        playHaptic(.start)
+
+        let threshold = UserDefaults.standard.integer(forKey: "SleepThreshold")
+        print("📏 Using threshold: \(threshold)")
+
+        bluetoothManager.$receivedSleepPosition
+            .sink { value in
+                guard let val = value,
+                      let pressure = Int(val),
+                      self.isTracking, !self.isPaused else { return }
+
+                if pressure >= threshold {
+                    print("⚠️ Pressure \(pressure) ≥ threshold \(threshold). Triggering alert.")
+                    playStrongHaptic()
+                    inAppAlert = "🛏️ Sleeping on back — please adjust."
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        inAppAlert = nil
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func stopSleepTracking() {
         isTracking = false
+        isPaused = false
         endTime = Date()
-        bluetoothManager.sendCommand(.stop) // use enum version
-        // TODO: Save `dailyData` locally or send to iPhone
+        bluetoothManager.sendCommand(.stop)
+        workoutManager.endWorkout()
+        playHaptic(.stop)
+
+        if let start = startTime, let end = endTime {
+            let payload: [String: Any] = [
+                "startTime": iso8601String(from: start),
+                "endTime": iso8601String(from: end),
+                "daily_data": dailyData
+            ]
+            bluetoothManager.sendSessionData(payload)
+        }
+
+        dailyData.removeAll()
+    }
+
+    private func togglePause() {
+        isPaused.toggle()
+        bluetoothManager.sendCommand(isPaused ? .pause : .start)
+        playHaptic(.directionUp)
+    }
+
+    // MARK: - Helpers
+
+    private func playStrongHaptic() {
+        let device = WKInterfaceDevice.current()
+        device.play(.failure)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            device.play(.failure)
+        }
+    }
+
+    private func playHaptic(_ type: WKHapticType) {
+        WKInterfaceDevice.current().play(type)
+    }
+
+    private func iso8601String(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
     }
 }
 
-// Updated date formatter using local timezone
 private let dateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.timeStyle = .short
